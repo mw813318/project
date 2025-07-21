@@ -2,30 +2,32 @@ import logging
 import asyncio
 import os
 import sqlite3
-from datetime import datetime, time, timedelta
-from aiogram import Bot, Dispatcher, types
-from aiogram.dispatcher import FSMContext
-from aiogram.dispatcher.filters import Command
-from aiogram.contrib.fsm_storage.memory import MemoryStorage
-from aiogram.dispatcher.filters.state import State, StatesGroup
-from aiogram.utils import executor
-import openpyxl
+from datetime import datetime, timedelta
 from collections import defaultdict
+
+from aiogram import Bot, Dispatcher, Router, F
+from aiogram.types import Message, FSInputFile
+from aiogram.filters import CommandStart, Command
+from aiogram.fsm.state import StatesGroup, State
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.storage.memory import MemoryStorage
+import openpyxl
 from openpyxl.utils import get_column_letter
 
 API_TOKEN = '7128425992:AAGbgXkXqUEzMTicL8Nv0Hgk8T2mst9G-sQ'
 GROUP_CHAT_ID = -1002521462361
 
-bot = Bot(token=API_TOKEN)
-storage = MemoryStorage()
-dp = Dispatcher(bot, storage=storage)
-
-DB_PATH = "requests.db"
-
 logging.basicConfig(level=logging.INFO)
 
+# Create bot and dispatcher
+bot = Bot(token=API_TOKEN)
+storage = MemoryStorage()
+dp = Dispatcher(storage=storage)
+router = Router()
 
-# --- FSM ---
+DB_PATH = 'requests.db'
+
+# FSM States
 class Form(StatesGroup):
     supplier = State()
     amount = State()
@@ -34,8 +36,7 @@ class Form(StatesGroup):
     delivery_date = State()
     admin_name = State()
 
-
-# --- DB ---
+# Database initialization
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
@@ -56,8 +57,7 @@ def init_db():
     conn.commit()
     conn.close()
 
-
-# --- Excel ---
+# Excel generation
 def generate_excel_by_weekdays():
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
@@ -93,64 +93,54 @@ def generate_excel_by_weekdays():
     wb.save(filename)
     return filename
 
-
-# --- Handlers ---
-@dp.message_handler(commands=['start', 'заявка'], chat_type=types.ChatType.PRIVATE)
-async def start_form(message: types.Message):
-    await Form.supplier.set()
+# Command handlers
+@router.message(CommandStart())
+@router.message(Command("заявка"))
+async def start_form(message: Message, state: FSMContext):
+    await state.set_state(Form.supplier)
     await message.answer("Введи поставщика:")
 
-
-@dp.message_handler(state=Form.supplier, chat_type=types.ChatType.PRIVATE)
-async def step_supplier(message: types.Message, state: FSMContext):
+@router.message(Form.supplier)
+async def step_supplier(message: Message, state: FSMContext):
     await state.update_data(supplier=message.text)
-    await Form.next()
+    await state.set_state(Form.amount)
     await message.answer("Введи сумму:")
 
-
-@dp.message_handler(state=Form.amount, chat_type=types.ChatType.PRIVATE)
-async def step_amount(message: types.Message, state: FSMContext):
+@router.message(Form.amount)
+async def step_amount(message: Message, state: FSMContext):
     try:
         amount = float(message.text.replace(',', '.').replace(' ', ''))
     except:
         return await message.answer("Некорректная сумма. Введи число.")
     await state.update_data(amount=amount)
-    await Form.next()
+    await state.set_state(Form.agent_name)
     await message.answer("Имя агента:")
 
-
-@dp.message_handler(state=Form.agent_name, chat_type=types.ChatType.PRIVATE)
-async def step_agent_name(message: types.Message, state: FSMContext):
+@router.message(Form.agent_name)
+async def step_agent_name(message: Message, state: FSMContext):
     await state.update_data(agent_name=message.text)
-    await Form.next()
+    await state.set_state(Form.agent_phone)
     await message.answer("Номер агента:")
 
-
-@dp.message_handler(state=Form.agent_phone, chat_type=types.ChatType.PRIVATE)
-async def step_agent_phone(message: types.Message, state: FSMContext):
+@router.message(Form.agent_phone)
+async def step_agent_phone(message: Message, state: FSMContext):
     await state.update_data(agent_phone=message.text)
-    await Form.next()
+    await state.set_state(Form.delivery_date)
     await message.answer("Дата поставки (дд.мм.гггг):")
-
-
-@dp.message_handler(state=Form.delivery_date, chat_type=types.ChatType.PRIVATE)
-async def step_delivery_date(message: types.Message, state: FSMContext):
+@router.message(Form.delivery_date)
+async def step_delivery_date(message: Message, state: FSMContext):
     try:
         date_obj = datetime.strptime(message.text, "%d.%m.%Y").date()
         await state.update_data(delivery_date=date_obj.strftime("%Y-%m-%d"))
-        await Form.next()
+        await state.set_state(Form.admin_name)
         await message.answer("Имя админа:")
     except:
         await message.answer("Неверный формат даты. Введи ДД.ММ.ГГГГ")
 
-
-@dp.message_handler(state=Form.admin_name, chat_type=types.ChatType.PRIVATE)
-async def step_admin_name(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    await state.finish()
-
-    user_id = message.from_user.id
-    username = message.from_user.full_name
+@router.message(Form.admin_name)
+async def step_admin_name(message: Message, state: FSMContext):
+    data = await state.update_data(admin_name=message.text)
+    user = message.from_user
 
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
@@ -158,26 +148,25 @@ async def step_admin_name(message: types.Message, state: FSMContext):
         INSERT INTO requests (user_id, username, supplier, amount, agent_name, agent_phone, delivery_date, admin_name)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     """, (
-        user_id, username, data['supplier'], data['amount'],
-        data['agent_name'], data['agent_phone'],
-        data['delivery_date'], message.text
+        user.id, user.full_name, data['supplier'], data['amount'],
+        data['agent_name'], data['agent_phone'], data['delivery_date'], data['admin_name']
     ))
     conn.commit()
     conn.close()
 
+    await state.clear()
     await message.answer("✅ Заявка сохранена.")
     await bot.send_message(GROUP_CHAT_ID,
-                           f"Новая заявка от {username}:\n"
-                           f"Поставщик: {data['supplier']}\n"
-                           f"Сумма: {data['amount']}\n"
-                           f"Агент: {data['agent_name']}\n"
-                           f"Номер: {data['agent_phone']}\n"
-                           f"Дата: {data['delivery_date']}\n"
-                           f"Админ: {message.text}")
+        f"📦 Новая заявка от {user.full_name}:\n\n"
+        f"Поставщик: {data['supplier']}\n"
+        f"Сумма: {data['amount']}\n"
+        f"Агент: {data['agent_name']}\n"
+        f"Номер: {data['agent_phone']}\n"
+        f"Дата: {data['delivery_date']}\n"
+        f"Админ: {data['admin_name']}\n")
 
-
-@dp.message_handler(commands=['заявки'], chat_type=types.ChatType.PRIVATE)
-async def list_requests(message: types.Message):
+@router.message(Command("заявки"))
+async def list_requests(message: Message):
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
     cur.execute("""
@@ -190,7 +179,7 @@ async def list_requests(message: types.Message):
     if not rows:
         return await message.answer("У тебя нет заявок.")
 
-    text = "Твои заявки:\n"
+    text = "📦 Твои заявки:\n"
     for i, r in enumerate(rows, 1):
         text += (f"\n{i}) Поставщик: {r[0]}\n"
                  f"Сумма: {r[1]}\n"
@@ -200,18 +189,16 @@ async def list_requests(message: types.Message):
                  f"Админ: {r[5]}\n")
     await message.answer(text)
 
-
-@dp.message_handler(commands=['экспорт'], chat_type=types.ChatType.PRIVATE)
-async def export_requests(message: types.Message):
+@router.message(Command("экспорт"))
+async def export_requests(message: Message):
     filename = generate_excel_by_weekdays()
     if filename:
-        await message.answer_document(types.InputFile(filename))
+        await message.answer_document(FSInputFile(filename))
         os.remove(filename)
     else:
         await message.answer("Нет заявок для экспорта.")
 
-
-# --- Планировщик ---
+# Scheduled task (use apscheduler for production)
 async def scheduler():
     while True:
         now = datetime.now()
@@ -227,7 +214,7 @@ async def scheduler():
             conn.close()
 
             if rows:
-                msg = "Заявки на завтра:\n"
+                msg = "📦 Заявки на завтра:\n"
                 total = 0
                 for i, r in enumerate(rows, 1):
                     total += float(r[1])
@@ -237,5 +224,13 @@ async def scheduler():
                             f"Номер: {r[3]}\n"
                             f"Дата: {r[4]}\n"
                             f"Админ: {r[5]}\n")
+                await bot.send_message(GROUP_CHAT_ID, msg)
+        await asyncio.sleep(60)
 
-                filename = generate_excel_by_week
+async def main():
+    init_db()
+    dp.include_router(router)
+    await dp.start_polling(bot, polling_timeout=30)
+
+if __name__ == '__main__':
+    asyncio.run(main())
