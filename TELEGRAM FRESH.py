@@ -4,14 +4,13 @@ from aiogram.types import ReplyKeyboardRemove
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
-from aiogram.dispatcher.filters import Command
 from datetime import datetime, time
 import asyncio
 import openpyxl
 import os
 
 API_TOKEN = '7128425992:AAGbgXkXqUEzMTicL8Nv0Hgk8T2mst9G-sQ'
-GROUP_CHAT_ID = -1002521462361 # Заменить на реальный ID группы
+GROUP_CHAT_ID = -1002521462361  # ID вашей Telegram-группы
 
 logging.basicConfig(level=logging.INFO)
 
@@ -26,12 +25,12 @@ class Form(StatesGroup):
     delivery_date = State()
     admin_name = State()
 
-# Временное хранилище заявок
-user_requests = {}
+user_requests = {}  # Словарь для хранения заявок
 
-@dp.message_handler(lambda message: message.chat.type == 'private', commands=['start', 'заявка'])
-@dp.message_handler(lambda message: message.chat.type == 'private' and message.text.lower() == 'заявка')
+@dp.message_handler(commands=['start', 'заявка'])
 async def start_form(message: types.Message):
+    if message.chat.type != 'private':
+        return
     await Form.supplier.set()
     await message.reply("✏️ Введи поставщика:", reply_markup=ReplyKeyboardRemove())
 
@@ -90,7 +89,7 @@ async def step_admin_name(message: types.Message, state: FSMContext):
 
     await message.reply("✅ Заявка сохранена!")
 
-    # Отправка в группу
+    # Отправка заявки в группу
     await bot.send_message(GROUP_CHAT_ID, f"""
 📦 Новая заявка от {username}:
 
