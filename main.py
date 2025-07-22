@@ -4,6 +4,7 @@ import os
 import sqlite3
 from datetime import datetime, timedelta
 from collections import defaultdict
+from dotenv import load_dotenv
 
 from aiogram import Bot, Dispatcher, Router, F
 from aiogram.types import Message, FSInputFile
@@ -14,8 +15,10 @@ from aiogram.fsm.storage.memory import MemoryStorage
 import openpyxl
 from openpyxl.utils import get_column_letter
 
-API_TOKEN = '7128425992:AAGbgXkXqUEzMTicL8Nv0Hgk8T2mst9G-sQ'
-GROUP_CHAT_ID = -1002521462361
+load_dotenv()
+
+API_TOKEN = os.getenv("BOT_TOKEN")
+GROUP_CHAT_ID = int(os.getenv("GROUP_CHAT_ID"))
 
 logging.basicConfig(level=logging.INFO)
 
