@@ -22,7 +22,6 @@ GROUP_CHAT_ID = int(os.getenv("GROUP_CHAT_ID"))
 
 logging.basicConfig(level=logging.INFO)
 
-# Create bot and dispatcher
 bot = Bot(token=API_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
@@ -30,7 +29,6 @@ router = Router()
 
 DB_PATH = 'requests.db'
 
-# FSM States
 class Form(StatesGroup):
     supplier = State()
     amount = State()
@@ -39,7 +37,6 @@ class Form(StatesGroup):
     delivery_date = State()
     admin_name = State()
 
-# Database initialization
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
@@ -60,12 +57,11 @@ def init_db():
     conn.commit()
     conn.close()
 
-# Excel generation for daily export
-def generate_excel_for_date(date_str):
+def generate_excel_by_date(date_str):
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
     cur.execute("""
-        SELECT supplier, amount, agent_name, agent_phone, delivery_date, admin_name, username
+        SELECT supplier, amount, agent_name, agent_phone, delivery_date, admin_name, username 
         FROM requests WHERE delivery_date = ?
     """, (date_str,))
     rows = cur.fetchall()
@@ -78,18 +74,21 @@ def generate_excel_for_date(date_str):
     ws = wb.active
     ws.title = "Заявки"
     ws.append(['Поставщик','Сумма','Имя агента','Номер','Дата','Админ','От кого'])
-    for r in rows:
-        ws.append(r)
-
+    total = 0
+    for e in rows:
+        ws.append(e)
+        total += float(e[1])
     for col in ws.columns:
         max_len = max(len(str(cell.value)) if cell.value else 0 for cell in col)
         ws.column_dimensions[get_column_letter(col[0].column)].width = max_len + 3
 
-    filename = f"requests_{date_str}.xlsx"
+    ws.append([])
+    ws.append(['', '💰 Общая сумма:', total])
+
+    filename = f"Заявки_{date_str}.xlsx"
     wb.save(filename)
     return filename
 
-# Command handlers
 @router.message(CommandStart())
 @router.message(Command("заявка"))
 async def start_form(message: Message, state: FSMContext):
@@ -164,47 +163,58 @@ async def step_admin_name(message: Message, state: FSMContext):
 
 @router.message(Command("заявки"))
 async def list_requests(message: Message):
+    parts = message.text.split()
+    if len(parts) > 1:
+        try:
+            date_str = datetime.strptime(parts[1], "%d.%m.%Y").strftime("%Y-%m-%d")
+        except:
+            return await message.answer("Неверный формат даты. Используй: /заявки дд.мм.гггг")
+    else:
+        date_str = datetime.now().strftime("%Y-%m-%d")
+
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
     cur.execute("""
-        SELECT supplier, amount, agent_name, agent_phone, delivery_date, admin_name
-        FROM requests WHERE user_id = ?
-    """, (message.from_user.id,))
+        SELECT supplier, amount, agent_name, agent_phone, delivery_date, admin_name, username 
+        FROM requests WHERE delivery_date = ?
+    """, (date_str,))
     rows = cur.fetchall()
     conn.close()
 
     if not rows:
-        return await message.answer("У тебя нет заявок.")
+        return await message.answer("Нет заявок на эту дату.")
 
-    text = "📦 Твои заявки:\n"
+    total = sum(float(r[1]) for r in rows)
+    text = f"📦 Заявки на {date_str} (всех админов):\n"
     for i, r in enumerate(rows, 1):
         text += (f"\n{i}) Поставщик: {r[0]}\n"
                  f"Сумма: {r[1]}\n"
                  f"Агент: {r[2]}\n"
                  f"Номер: {r[3]}\n"
                  f"Дата: {r[4]}\n"
-                 f"Админ: {r[5]}\n")
+                 f"Админ: {r[5]}\n"
+                 f"От кого: {r[6]}\n")
+    text += f"\n💰 Общая сумма: {total}"
     await message.answer(text)
 
 @router.message(Command("экспорт"))
 async def export_requests(message: Message):
-    today = datetime.now().date().strftime("%Y-%m-%d")
-    filename = generate_excel_for_date(today)
+    date_str = datetime.now().strftime("%Y-%m-%d")
+    filename = generate_excel_by_date(date_str)
     if filename:
         await message.answer_document(FSInputFile(filename))
         os.remove(filename)
     else:
         await message.answer("Нет заявок для экспорта.")
 
-# Scheduled task: export daily at 00:45
 async def scheduler():
     while True:
         now = datetime.now()
-        if now.hour == 0 and now.minute == 45:
-            today_str = now.date().strftime("%Y-%m-%d")
-            filename = generate_excel_for_date(today_str)
+        if now.time().hour == 2 and now.time().minute == 21:
+            date_str = now.strftime("%Y-%m-%d")
+            filename = generate_excel_by_date(date_str)
             if filename:
-                await bot.send_document(GROUP_CHAT_ID, FSInputFile(filename), caption=f"📤 Заявки за {today_str}")
+                await bot.send_document(GROUP_CHAT_ID, FSInputFile(filename), caption=f"📄 Заявки за {date_str}")
                 os.remove(filename)
         await asyncio.sleep(60)
 
