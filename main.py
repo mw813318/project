@@ -60,39 +60,32 @@ def init_db():
     conn.commit()
     conn.close()
 
-# Excel generation
-def generate_excel_by_weekdays():
+# Excel generation for daily export
+def generate_excel_for_date(date_str):
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
-    cur.execute("SELECT supplier, amount, agent_name, agent_phone, delivery_date, admin_name, username FROM requests")
+    cur.execute("""
+        SELECT supplier, amount, agent_name, agent_phone, delivery_date, admin_name, username
+        FROM requests WHERE delivery_date = ?
+    """, (date_str,))
     rows = cur.fetchall()
     conn.close()
 
     if not rows:
         return None
 
-    grouped = defaultdict(list)
-    for r in rows:
-        try:
-            date_obj = datetime.strptime(r[4], "%Y-%m-%d").date()
-            weekday = date_obj.strftime("%A")
-            grouped[weekday].append(r)
-        except:
-            continue
-
     wb = openpyxl.Workbook()
-    wb.remove(wb.active)
+    ws = wb.active
+    ws.title = "Заявки"
+    ws.append(['Поставщик','Сумма','Имя агента','Номер','Дата','Админ','От кого'])
+    for r in rows:
+        ws.append(r)
 
-    for day, entries in grouped.items():
-        ws = wb.create_sheet(title=day)
-        ws.append(['Поставщик','Сумма','Имя агента','Номер','Дата','Админ','От кого'])
-        for e in entries:
-            ws.append(e)
-        for col in ws.columns:
-            max_len = max(len(str(cell.value)) if cell.value else 0 for cell in col)
-            ws.column_dimensions[get_column_letter(col[0].column)].width = max_len + 3
+    for col in ws.columns:
+        max_len = max(len(str(cell.value)) if cell.value else 0 for cell in col)
+        ws.column_dimensions[get_column_letter(col[0].column)].width = max_len + 3
 
-    filename = f"weekly_requests_{datetime.now().strftime('%Y%m%d')}.xlsx"
+    filename = f"requests_{date_str}.xlsx"
     wb.save(filename)
     return filename
 
@@ -130,6 +123,7 @@ async def step_agent_phone(message: Message, state: FSMContext):
     await state.update_data(agent_phone=message.text)
     await state.set_state(Form.delivery_date)
     await message.answer("Дата поставки (дд.мм.гггг):")
+
 @router.message(Form.delivery_date)
 async def step_delivery_date(message: Message, state: FSMContext):
     try:
@@ -194,45 +188,30 @@ async def list_requests(message: Message):
 
 @router.message(Command("экспорт"))
 async def export_requests(message: Message):
-    filename = generate_excel_by_weekdays()
+    today = datetime.now().date().strftime("%Y-%m-%d")
+    filename = generate_excel_for_date(today)
     if filename:
         await message.answer_document(FSInputFile(filename))
         os.remove(filename)
     else:
         await message.answer("Нет заявок для экспорта.")
 
-# Scheduled task (use apscheduler for production)
+# Scheduled task: export daily at 00:45
 async def scheduler():
     while True:
         now = datetime.now()
-        if now.time().hour == 20 and now.time().minute == 0:
-            tomorrow = (now + timedelta(days=1)).date().strftime("%Y-%m-%d")
-            conn = sqlite3.connect(DB_PATH)
-            cur = conn.cursor()
-            cur.execute("""
-                SELECT supplier, amount, agent_name, agent_phone, delivery_date, admin_name, username
-                FROM requests WHERE delivery_date = ?
-            """, (tomorrow,))
-            rows = cur.fetchall()
-            conn.close()
-
-            if rows:
-                msg = "📦 Заявки на завтра:\n"
-                total = 0
-                for i, r in enumerate(rows, 1):
-                    total += float(r[1])
-                    msg += (f"\n{i}) Поставщик: {r[0]}\n"
-                            f"Сумма: {r[1]}\n"
-                            f"Агент: {r[2]}\n"
-                            f"Номер: {r[3]}\n"
-                            f"Дата: {r[4]}\n"
-                            f"Админ: {r[5]}\n")
-                await bot.send_message(GROUP_CHAT_ID, msg)
+        if now.hour == 0 and now.minute == 45:
+            today_str = now.date().strftime("%Y-%m-%d")
+            filename = generate_excel_for_date(today_str)
+            if filename:
+                await bot.send_document(GROUP_CHAT_ID, FSInputFile(filename), caption=f"📤 Заявки за {today_str}")
+                os.remove(filename)
         await asyncio.sleep(60)
 
 async def main():
     init_db()
     dp.include_router(router)
+    asyncio.create_task(scheduler())
     await dp.start_polling(bot, polling_timeout=30)
 
 if __name__ == '__main__':
