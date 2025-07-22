@@ -73,23 +73,86 @@ def generate_excel_by_date(date_str):
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Заявки"
-    ws.append(['Поставщик','Сумма','Имя агента','Номер','Дата','Админ','От кого'])
+    ws.append(['Поставщик','Сумма','Имя агента','Номер','Дата поставки','Админ','От кого'])
     total = 0
-    for e in rows:
-        ws.append(e)
-        total += float(e[1])
+
+    for row in rows:
+        amount = float(row[1])
+        excel_row = [
+            row[0],          # supplier
+            amount,          # real number
+            row[2],          # agent_name
+            row[3],          # agent_phone
+            row[4],          # delivery_date
+            row[5],          # admin_name
+            row[6]           # username
+        ]
+        ws.append(excel_row)
+        total += amount
+
+    # Применяем числовой формат к колонке "Сумма"
+    for row in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=2, max_col=2):
+        for cell in row:
+            cell.number_format = '#,##0'
+    
+    # Автоширина
     for col in ws.columns:
         max_len = max(len(str(cell.value)) if cell.value else 0 for cell in col)
         ws.column_dimensions[get_column_letter(col[0].column)].width = max_len + 3
 
+    # Итог
     ws.append([])
-    ws.append(['', '💰 Общая сумма:', total])
+    total_formatted = "{:,.0f}".format(total).replace(",", ".")
+    ws.append(['', '💰 Общая сумма:', total_formatted])
+
+
+
+    for col in ws.columns:
+        max_len = max(len(str(cell.value)) if cell.value else 0 for cell in col)
+        ws.column_dimensions[get_column_letter(col[0].column)].width = max_len + 3
 
     filename = f"Заявки_{date_str}.xlsx"
     wb.save(filename)
     return filename
 
 @router.message(CommandStart())
+
+@router.message(Command("поставки"))
+async def show_deliveries(message: Message):
+    parts = message.text.split()
+    if len(parts) > 1:
+        try:
+            date_str = datetime.strptime(parts[1], "%d.%m.%Y").strftime("%Y-%m-%d")
+        except ValueError:
+            return await message.answer("❌ Неверный формат даты. Используй: /поставки дд.мм.гггг")
+    else:
+        date_str = datetime.now().strftime("%Y-%m-%d")
+
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT supplier, amount FROM requests
+        WHERE delivery_date = ?
+    """, (date_str,))
+    rows = cur.fetchall()
+    conn.close()
+
+    if not rows:
+        return await message.answer(f"📭 Нет поставок на {date_str}.")
+
+    total = sum(float(row[1]) for row in rows)
+    total_formatted = "{:,.0f}".format(total).replace(",", ".")
+    
+    text = f"📦 Поставки на {datetime.strptime(date_str, '%Y-%m-%d').strftime('%d.%m.%Y')}:\n"
+    for i, row in enumerate(rows, 1):
+        amount_formatted = "{:,.0f}".format(float(row[1])).replace(",", ".")
+        text += f"\n{i}) Поставщик: {row[0]}\nСумма: {amount_formatted}"
+
+    text += f"\n\n💰 Общая сумма поставок: {total_formatted}"
+    await message.answer(text)
+
+
+
 @router.message(Command("заявка"))
 async def start_form(message: Message, state: FSMContext):
     await state.set_state(Form.supplier)
@@ -158,7 +221,7 @@ async def step_admin_name(message: Message, state: FSMContext):
         f"Сумма: {data['amount']}\n"
         f"Агент: {data['agent_name']}\n"
         f"Номер: {data['agent_phone']}\n"
-        f"Дата: {data['delivery_date']}\n"
+        f"Дата поставки: {data['delivery_date']}\n"
         f"Админ: {data['admin_name']}\n")
 
 @router.message(Command("заявки"))
@@ -185,17 +248,22 @@ async def list_requests(message: Message):
         return await message.answer("Нет заявок на эту дату.")
 
     total = sum(float(r[1]) for r in rows)
-    text = f"📦 Заявки на {date_str} (всех админов):\n"
+    total_formatted = "{:,.0f}".format(total).replace(",", ".")
+
+    text = f"📦 Заявки на {datetime.strptime(date_str, '%Y-%m-%d').strftime('%d.%m.%Y')} (всех админов):\n"
     for i, r in enumerate(rows, 1):
+        amount_formatted = "{:,.0f}".format(float(r[1])).replace(",", ".")
         text += (f"\n{i}) Поставщик: {r[0]}\n"
-                 f"Сумма: {r[1]}\n"
+                 f"Сумма: {amount_formatted}\n"
                  f"Агент: {r[2]}\n"
                  f"Номер: {r[3]}\n"
-                 f"Дата: {r[4]}\n"
+                 f"Дата поставки: {r[4]}\n"
                  f"Админ: {r[5]}\n"
                  f"От кого: {r[6]}\n")
-    text += f"\n💰 Общая сумма: {total}"
+
+    text += f"\n💰 Общая сумма: {total_formatted}"
     await message.answer(text)
+
 
 @router.message(Command("экспорт"))
 async def export_requests(message: Message):
@@ -210,7 +278,7 @@ async def export_requests(message: Message):
 async def scheduler():
     while True:
         now = datetime.now()
-        if now.time().hour == 2 and now.time().minute == 21:
+        if now.time().hour == 3 and now.time().minute == 46:
             date_str = now.strftime("%Y-%m-%d")
             filename = generate_excel_by_date(date_str)
             if filename:
