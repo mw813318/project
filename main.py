@@ -278,7 +278,7 @@ async def export_requests(message: Message):
 async def scheduler():
     while True:
         now = datetime.now()
-        if now.time().hour == 3 and now.time().minute == 46:
+        if now.time().hour == 19 and now.time().minute == 00:
             date_str = now.strftime("%Y-%m-%d")
             filename = generate_excel_by_date(date_str)
             if filename:
