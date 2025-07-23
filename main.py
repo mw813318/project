@@ -261,21 +261,22 @@ async def list_requests(message: Message):
     total = sum(float(r[1]) for r in rows)
     total_formatted = "{:,.0f}".format(total).replace(",", ".")
 
-    text = f"📦 Заявки за {target_date.strftime('%d.%m.%Y')}:\n"
+    text = f"📦 Заявки за {target_date.strftime('%d.%m.%Y')}:\n\n"
     for i, r in enumerate(rows, 1):
         amount_formatted = "{:,.0f}".format(float(r[1])).replace(",", ".")
         text += (
-            f"\n{i}) Поставщик: {r[0]}\n"
+            f"{i}) Поставщик: {r[0]}\n"
             f"Сумма: {amount_formatted}\n"
             f"Агент: {r[2]}\n"
             f"Номер: {r[3]}\n"
             f"Дата поставки: {datetime.strptime(r[4], '%Y-%m-%d').strftime('%d.%m.%Y')}\n"
             f"Админ: {r[5]}\n"
-            f"От кого: {r[6]}"
+            f"От кого: {r[6]}\n\n"
         )
 
-    text += f"\n\n💰 Общая сумма заявок: {total_formatted}"
+    text += f"💰 Общая сумма заявок: {total_formatted}"
     await message.answer(text)
+
 
 
 
