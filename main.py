@@ -198,7 +198,8 @@ async def step_delivery_date(message: Message, state: FSMContext):
 
 @router.message(Form.admin_name)
 async def step_admin_name(message: Message, state: FSMContext):
-    data = await state.update_data(admin_name=message.text)
+    await state.update_data(admin_name=message.text)
+    data = await state.get_data()
     user = message.from_user
 
     conn = sqlite3.connect(DB_PATH)
@@ -224,45 +225,58 @@ async def step_admin_name(message: Message, state: FSMContext):
         f"Дата поставки: {data['delivery_date']}\n"
         f"Админ: {data['admin_name']}\n")
 
+
 @router.message(Command("заявки"))
 async def list_requests(message: Message):
     parts = message.text.split()
+
+    # Получаем дату, если указана
     if len(parts) > 1:
         try:
-            date_str = datetime.strptime(parts[1], "%d.%m.%Y").strftime("%Y-%m-%d")
+            target_date = datetime.strptime(parts[1], "%d.%m.%Y").date()
         except:
-            return await message.answer("Неверный формат даты. Используй: /заявки дд.мм.гггг")
+            return await message.answer("❌ Неверный формат даты. Используй: /заявки дд.мм.гггг")
     else:
-        date_str = datetime.now().strftime("%Y-%m-%d")
+        # Если дата не указана, берём сегодняшнюю
+        target_date = datetime.now().date()
 
+    # Определяем диапазон начала и конца дня
+    date_start = datetime.combine(target_date, datetime.min.time())
+    date_end = datetime.combine(target_date, datetime.max.time())
+
+    # Запрос по дате СОЗДАНИЯ заявки (поле created_at)
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
     cur.execute("""
-        SELECT supplier, amount, agent_name, agent_phone, delivery_date, admin_name, username 
-        FROM requests WHERE delivery_date = ?
-    """, (date_str,))
+        SELECT supplier, amount, agent_name, agent_phone, delivery_date, admin_name, username, created_at
+        FROM requests
+        WHERE created_at BETWEEN ? AND ?
+    """, (date_start, date_end))
     rows = cur.fetchall()
     conn.close()
 
     if not rows:
-        return await message.answer("Нет заявок на эту дату.")
+        return await message.answer(f"📭 Нет заявок за {target_date.strftime('%d.%m.%Y')}.")
 
     total = sum(float(r[1]) for r in rows)
     total_formatted = "{:,.0f}".format(total).replace(",", ".")
 
-    text = f"📦 Заявки на {datetime.strptime(date_str, '%Y-%m-%d').strftime('%d.%m.%Y')} (всех админов):\n"
+    text = f"📦 Заявки за {target_date.strftime('%d.%m.%Y')}:\n"
     for i, r in enumerate(rows, 1):
         amount_formatted = "{:,.0f}".format(float(r[1])).replace(",", ".")
-        text += (f"\n{i}) Поставщик: {r[0]}\n"
-                 f"Сумма: {amount_formatted}\n"
-                 f"Агент: {r[2]}\n"
-                 f"Номер: {r[3]}\n"
-                 f"Дата поставки: {r[4]}\n"
-                 f"Админ: {r[5]}\n"
-                 f"От кого: {r[6]}\n")
+        text += (
+            f"\n{i}) Поставщик: {r[0]}\n"
+            f"Сумма: {amount_formatted}\n"
+            f"Агент: {r[2]}\n"
+            f"Номер: {r[3]}\n"
+            f"Дата поставки: {datetime.strptime(r[4], '%Y-%m-%d').strftime('%d.%m.%Y')}\n"
+            f"Админ: {r[5]}\n"
+            f"От кого: {r[6]}"
+        )
 
-    text += f"\n💰 Общая сумма: {total_formatted}"
+    text += f"\n\n💰 Общая сумма заявок: {total_formatted}"
     await message.answer(text)
+
 
 
 @router.message(Command("экспорт"))
