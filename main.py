@@ -32,6 +32,7 @@ DB_PATH = 'requests.db'
 class Form(StatesGroup):
     supplier = State()
     amount = State()
+    description = State()
     agent_name = State()
     agent_phone = State()
     delivery_date = State()
@@ -40,6 +41,8 @@ class Form(StatesGroup):
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
+   
+    # Создаем таблицу, если ее нет
     cur.execute("""
         CREATE TABLE IF NOT EXISTS requests (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -54,6 +57,13 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+   
+    # Проверяем наличие колонки description и добавляем если ее нет
+    cur.execute("PRAGMA table_info(requests)")
+    columns = [column[1] for column in cur.fetchall()]
+    if 'description' not in columns:
+        cur.execute("ALTER TABLE requests ADD COLUMN description TEXT")
+   
     conn.commit()
     conn.close()
 
@@ -61,7 +71,7 @@ def generate_excel_by_date(date_str):
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
     cur.execute("""
-        SELECT supplier, amount, agent_name, agent_phone, delivery_date, admin_name, username 
+        SELECT supplier, amount, description, agent_name, agent_phone, delivery_date, admin_name, username
         FROM requests WHERE delivery_date = ?
     """, (date_str,))
     rows = cur.fetchall()
@@ -73,7 +83,7 @@ def generate_excel_by_date(date_str):
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Заявки"
-    ws.append(['Поставщик','Сумма','Имя агента','Номер','Дата поставки','Админ','От кого'])
+    ws.append(['Поставщик','Сумма','Описание','Имя агента','Номер','Дата поставки','Админ','От кого'])
     total = 0
 
     for row in rows:
@@ -81,11 +91,12 @@ def generate_excel_by_date(date_str):
         excel_row = [
             row[0],          # supplier
             amount,          # real number
-            row[2],          # agent_name
-            row[3],          # agent_phone
-            row[4],          # delivery_date
-            row[5],          # admin_name
-            row[6]           # username
+            row[2],          # description
+            row[3],          # agent_name
+            row[4],          # agent_phone
+            row[5],          # delivery_date
+            row[6],          # admin_name
+            row[7]           # username
         ]
         ws.append(excel_row)
         total += amount
@@ -94,7 +105,7 @@ def generate_excel_by_date(date_str):
     for row in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=2, max_col=2):
         for cell in row:
             cell.number_format = '#,##0'
-    
+   
     # Автоширина
     for col in ws.columns:
         max_len = max(len(str(cell.value)) if cell.value else 0 for cell in col)
@@ -105,8 +116,6 @@ def generate_excel_by_date(date_str):
     total_formatted = "{:,.0f}".format(total).replace(",", ".")
     ws.append(['', '💰 Общая сумма:', total_formatted])
 
-
-
     for col in ws.columns:
         max_len = max(len(str(cell.value)) if cell.value else 0 for cell in col)
         ws.column_dimensions[get_column_letter(col[0].column)].width = max_len + 3
@@ -116,6 +125,8 @@ def generate_excel_by_date(date_str):
     return filename
 
 @router.message(CommandStart())
+async def start(message: Message):
+    await message.answer("Привет! Я бот для учета заявок. Используй команду /заявка чтобы создать новую заявку.")
 
 @router.message(Command("поставки"))
 async def show_deliveries(message: Message):
@@ -131,7 +142,7 @@ async def show_deliveries(message: Message):
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
     cur.execute("""
-        SELECT supplier, amount FROM requests
+        SELECT supplier, amount, description FROM requests
         WHERE delivery_date = ?
     """, (date_str,))
     rows = cur.fetchall()
@@ -142,16 +153,17 @@ async def show_deliveries(message: Message):
 
     total = sum(float(row[1]) for row in rows)
     total_formatted = "{:,.0f}".format(total).replace(",", ".")
-    
+   
     text = f"📦 Поставки на {datetime.strptime(date_str, '%Y-%m-%d').strftime('%d.%m.%Y')}:\n"
     for i, row in enumerate(rows, 1):
         amount_formatted = "{:,.0f}".format(float(row[1])).replace(",", ".")
         text += f"\n{i}) Поставщик: {row[0]}\nСумма: {amount_formatted}"
+        if row[2]:  # Добавляем описание, если оно есть
+            text += f"\nОписание: {row[2]}"
+        text += "\n"  # Добавляем дополнительный пробел между заявками
 
-    text += f"\n\n💰 Общая сумма поставок: {total_formatted}"
+    text += f"\n💰 Общая сумма поставок: {total_formatted}"
     await message.answer(text)
-
-
 
 @router.message(Command("заявка"))
 async def start_form(message: Message, state: FSMContext):
@@ -171,6 +183,12 @@ async def step_amount(message: Message, state: FSMContext):
     except:
         return await message.answer("Некорректная сумма. Введи число.")
     await state.update_data(amount=amount)
+    await state.set_state(Form.description)
+    await message.answer("Введи описание (если нужно):")
+
+@router.message(Form.description)
+async def step_description(message: Message, state: FSMContext):
+    await state.update_data(description=message.text)
     await state.set_state(Form.agent_name)
     await message.answer("Имя агента:")
 
@@ -205,10 +223,10 @@ async def step_admin_name(message: Message, state: FSMContext):
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
     cur.execute("""
-        INSERT INTO requests (user_id, username, supplier, amount, agent_name, agent_phone, delivery_date, admin_name)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO requests (user_id, username, supplier, amount, description, agent_name, agent_phone, delivery_date, admin_name)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
-        user.id, user.full_name, data['supplier'], data['amount'],
+        user.id, user.full_name, data['supplier'], data['amount'], data.get('description', ''),
         data['agent_name'], data['agent_phone'], data['delivery_date'], data['admin_name']
     ))
     conn.commit()
@@ -216,15 +234,25 @@ async def step_admin_name(message: Message, state: FSMContext):
 
     await state.clear()
     await message.answer("✅ Заявка сохранена.")
-    await bot.send_message(GROUP_CHAT_ID,
+   
+    # Формируем сообщение для группы
+    message_text = (
         f"📦 Новая заявка от {user.full_name}:\n\n"
         f"Поставщик: {data['supplier']}\n"
         f"Сумма: {data['amount']}\n"
+    )
+   
+    if data.get('description'):
+        message_text += f"Описание: {data['description']}\n"
+       
+    message_text += (
         f"Агент: {data['agent_name']}\n"
         f"Номер: {data['agent_phone']}\n"
         f"Дата поставки: {data['delivery_date']}\n"
-        f"Админ: {data['admin_name']}\n")
-
+        f"Админ: {data['admin_name']}\n"
+    )
+   
+    await bot.send_message(GROUP_CHAT_ID, message_text)
 
 @router.message(Command("заявки"))
 async def list_requests(message: Message):
@@ -248,7 +276,7 @@ async def list_requests(message: Message):
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
     cur.execute("""
-        SELECT supplier, amount, agent_name, agent_phone, delivery_date, admin_name, username, created_at
+        SELECT supplier, amount, description, agent_name, agent_phone, delivery_date, admin_name, username, created_at
         FROM requests
         WHERE created_at BETWEEN ? AND ?
     """, (date_start, date_end))
@@ -267,18 +295,19 @@ async def list_requests(message: Message):
         text += (
             f"{i}) Поставщик: {r[0]}\n"
             f"Сумма: {amount_formatted}\n"
-            f"Агент: {r[2]}\n"
-            f"Номер: {r[3]}\n"
-            f"Дата поставки: {datetime.strptime(r[4], '%Y-%m-%d').strftime('%d.%m.%Y')}\n"
-            f"Админ: {r[5]}\n"
-            f"От кого: {r[6]}\n\n"
+        )
+        if r[2]:  # Добавляем описание, если оно есть
+            text += f"Описание: {r[2]}\n"
+        text += (
+            f"Агент: {r[3]}\n"
+            f"Номер: {r[4]}\n"
+            f"Дата поставки: {datetime.strptime(r[5], '%Y-%m-%d').strftime('%d.%m.%Y')}\n"
+            f"Админ: {r[6]}\n"
+            f"От кого: {r[7]}\n\n"
         )
 
     text += f"💰 Общая сумма заявок: {total_formatted}"
     await message.answer(text)
-
-
-
 
 @router.message(Command("экспорт"))
 async def export_requests(message: Message):
