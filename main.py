@@ -38,6 +38,12 @@ class Form(StatesGroup):
     delivery_date = State()
     admin_name = State()
 
+# Обработчик отмены заявки по слову "отмена" на любом шаге
+@router.message(F.text.casefold() == "отмена")
+async def cancel_form(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer("🚫 Заявка отменена. Чтобы начать заново — используй /заявка.")
+
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
@@ -256,58 +262,72 @@ async def step_admin_name(message: Message, state: FSMContext):
 
 @router.message(Command("заявки"))
 async def list_requests(message: Message):
-    parts = message.text.split()
-
-    # Получаем дату, если указана
-    if len(parts) > 1:
+    # Получаем текст сообщения без команды
+    args = message.text.split()[1:] if len(message.text.split()) > 1 else []
+   
+    if args:
         try:
-            target_date = datetime.strptime(parts[1], "%d.%m.%Y").date()
-        except:
-            return await message.answer("❌ Неверный формат даты. Используй: /заявки дд.мм.гггг")
+            # Пробуем распарсить дату из аргумента
+            target_date = datetime.strptime(args[0], "%d.%m.%Y").date()
+            date_str = target_date.strftime('%Y-%m-%d')
+            title = f"📦 Заявки за {args[0]}"
+        except ValueError:
+            return await message.answer("❌ Неверный формат даты. Используйте: /заявки дд.мм.гггг")
     else:
-        # Если дата не указана, берём сегодняшнюю
+        # Если дата не указана - показываем за сегодня
         target_date = datetime.now().date()
+        date_str = target_date.strftime('%Y-%m-%d')
+        title = f"📦 Заявки за сегодня ({target_date.strftime('%d.%m.%Y')})"
 
-    # Определяем диапазон начала и конца дня
-    date_start = datetime.combine(target_date, datetime.min.time())
-    date_end = datetime.combine(target_date, datetime.max.time())
-
-    # Запрос по дате СОЗДАНИЯ заявки (поле created_at)
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
     cur.execute("""
-        SELECT supplier, amount, description, agent_name, agent_phone, delivery_date, admin_name, username, created_at
+        SELECT supplier, amount, description, agent_name, agent_phone,
+               delivery_date, admin_name, username, created_at
         FROM requests
-        WHERE created_at BETWEEN ? AND ?
-    """, (date_start, date_end))
+        WHERE date(created_at) = ?
+        ORDER BY created_at DESC
+    """, (date_str,))
     rows = cur.fetchall()
     conn.close()
 
     if not rows:
-        return await message.answer(f"📭 Нет заявок за {target_date.strftime('%d.%m.%Y')}.")
+        return await message.answer(f"📭 Нет заявок за {title.split()[-1]}")
 
     total = sum(float(r[1]) for r in rows)
     total_formatted = "{:,.0f}".format(total).replace(",", ".")
 
-    text = f"📦 Заявки за {target_date.strftime('%d.%m.%Y')}:\n\n"
+    text = f"{title}:\n\n"
+   
     for i, r in enumerate(rows, 1):
         amount_formatted = "{:,.0f}".format(float(r[1])).replace(",", ".")
+        created_time = datetime.strptime(r[8], '%Y-%m-%d %H:%M:%S').strftime('%H:%M')
+       
         text += (
+            f"🕒 {created_time}\n"
             f"{i}) Поставщик: {r[0]}\n"
-            f"Сумма: {amount_formatted}\n"
+            f"   Сумма: {amount_formatted}\n"
         )
-        if r[2]:  # Добавляем описание, если оно есть
-            text += f"Описание: {r[2]}\n"
+        if r[2] and r[2] != '-':
+            text += f"   Описание: {r[2]}\n"
         text += (
-            f"Агент: {r[3]}\n"
-            f"Номер: {r[4]}\n"
-            f"Дата поставки: {datetime.strptime(r[5], '%Y-%m-%d').strftime('%d.%m.%Y')}\n"
-            f"Админ: {r[6]}\n"
-            f"От кого: {r[7]}\n\n"
+            f"   Агент: {r[3]}\n"
+            f"   Номер: {r[4]}\n"
+            f"   Дата поставки: {datetime.strptime(r[5], '%Y-%m-%d').strftime('%d.%m.%Y')}\n"
+            f"   Админ: {r[6]}\n"
+            f"   От кого: {r[7]}\n\n"
         )
 
-    text += f"💰 Общая сумма заявок: {total_formatted}"
-    await message.answer(text)
+    text += f"💰 Общая сумма: {total_formatted}"
+   
+    # Разбиваем сообщение на части если оно слишком длинное
+    if len(text) > 4000:
+        parts = [text[i:i+4000] for i in range(0, len(text), 4000)]
+        for part in parts:
+            await message.answer(part)
+            await asyncio.sleep(0.5)
+    else:
+        await message.answer(text)
 
 @router.message(Command("экспорт"))
 async def export_requests(message: Message):
